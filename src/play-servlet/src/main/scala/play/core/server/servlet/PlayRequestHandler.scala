@@ -2,18 +2,17 @@ package play.core.server.servlet
 
 import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 
-import akka.stream.Materializer
-import akka.stream.scaladsl.Sink
+import akka.stream.{ IOResult, Materializer }
 import akka.util.ByteString
-import play.api.{ Application, Logger }
 import play.api.http.{ DefaultHttpErrorHandler, HeaderNames, HttpErrorHandler, Status }
 import play.api.libs.streams.Accumulator
-import play.api.mvc.{ EssentialAction, RequestHeader, Results, WebSocket }
+import play.api.mvc._
+import play.api.{ Application, Logger }
 import play.core.server.PlayServlet
 import play.core.server.common.{ ReloadCache, ServerResultUtils }
 
-import scala.concurrent.{ Await, Future }
 import scala.concurrent.duration._
+import scala.concurrent.{ Await, Future }
 import scala.util.{ Failure, Success, Try }
 
 final class PlayRequestHandler(servlet: PlayServlet) {
@@ -51,12 +50,14 @@ final class PlayRequestHandler(servlet: PlayServlet) {
   }
 
   def handle(request: HttpServletRequest, response: HttpServletResponse): Unit = {
-    println("Request")
-    logger.trace("Http request received by servlet: " + request)
-
     import play.core.Execution.Implicits.trampoline
+    logger.trace(s"Http Request received by servlet: ${request.getPathInfo}")
+    logger.trace(s"Http Request supports Async: ${request.isAsyncSupported}")
 
-    val asyncContext = request.startAsync()
+    val asyncContext = {
+      if (request.isAsyncStarted) Some(request.startAsync())
+      else None
+    }
 
     // FIXME: set request timeout
     // asyncContext.setTimeout()
@@ -112,12 +113,18 @@ final class PlayRequestHandler(servlet: PlayServlet) {
     }).onComplete {
       // complete the context, no matter if we have an error or not
       case Success(_) =>
-        println("Request completed")
-        asyncContext.complete()
+        logger.trace("Request completed")
+        asyncContext match {
+          case Some(context) => context.complete()
+          case None          => response.flushBuffer()
+        }
       case Failure(_) =>
-        println("Request completed with failure")
+        logger.trace("Request completed with failure")
         sendSimpleErrorResponse(Status.SERVICE_UNAVAILABLE, response)
-        asyncContext.complete()
+        asyncContext match {
+          case Some(context) => context.complete()
+          case None          => response.flushBuffer()
+        }
     }
   }
 
@@ -133,25 +140,36 @@ final class PlayRequestHandler(servlet: PlayServlet) {
       request: HttpServletRequest,
       app: Option[Application],
       response: HttpServletResponse
-  ): Future[Unit] = {
+  ): Future[IOResult] = {
     implicit val mat: Materializer = app.fold(servlet.materializer)(_.materializer)
     import play.core.Execution.Implicits.trampoline
 
+    val actionFuture = {
+      def createActionFuture = Future(action(requestHeader))(mat.executionContext)
+      // if async is un-supported we actually await the current future
+      // and block the request thread :(
+      if (request.isAsyncSupported) createActionFuture
+      else Future.successful(Await.result(createActionFuture, Duration.Inf))
+    }
+
     for {
-      bodyParser <- Future(action(requestHeader))(mat.executionContext)
-      // Execute the action and get a result
+      bodyParser <- actionFuture
       actionResult <- {
         val body = modelConversion.convertRequestBody(request)
         (body match {
           case None         => bodyParser.run()
-          case Some(source) => bodyParser.run(source)
+          case Some(source) =>
+            // if async is un-supported we actually await the current future
+            // and block the request thread :(
+            if (request.isAsyncSupported) bodyParser.run(source)
+            else Future.successful(Await.result(bodyParser.run(source), Duration.Inf))
         }).recoverWith {
           case error =>
-            println("Cannot invoke the action")
             logger.error("Cannot invoke the action", error)
             errorHandler(app).onServerError(requestHeader, error)
         }
       }
+
       // Clean and validate the action's result
       validatedResult <- {
         val cleanedResult = resultUtils.prepareCookies(requestHeader, actionResult)
@@ -159,7 +177,14 @@ final class PlayRequestHandler(servlet: PlayServlet) {
       }
       // Convert the result to a Netty HttpResponse
       convertedResult <- {
-        modelConversion.convertResult(validatedResult, requestHeader, request.getProtocol, errorHandler(app), response)
+        modelConversion.convertResult(
+          validatedResult,
+          requestHeader,
+          request.getProtocol,
+          errorHandler(app),
+          response,
+          request.isAsyncSupported
+        )
       }
     } yield convertedResult
   }

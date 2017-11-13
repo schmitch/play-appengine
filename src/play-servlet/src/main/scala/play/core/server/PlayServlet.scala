@@ -2,7 +2,7 @@ package play.core.server
 
 import java.io.File
 import java.net.InetSocketAddress
-import javax.servlet.annotation.{ WebListener, WebServlet }
+import javax.servlet.annotation.WebListener
 import javax.servlet.http.{ HttpServlet, HttpServletRequest, HttpServletResponse }
 import javax.servlet.{ ServletContextEvent, ServletContextListener }
 
@@ -13,12 +13,19 @@ import play.core.server.servlet.PlayRequestHandler
 
 import scala.util.{ Success, Try }
 
+// We only need to register the WebListener, since the Servlet will register itself
+// @WebServlet(name = "play", urlPatterns = Array("/*"), asyncSupported = true)
 @WebListener
-@WebServlet(name = "play", urlPatterns = Array("/*"), asyncSupported = true)
 final class PlayServlet extends HttpServlet with ServletContextListener with Server {
 
-  // FIXME: change depending on context, maybe we need two versions, one for prod and one for dev?
-  def mode: Mode = Mode.Prod
+  private val logger = Logger(this.getClass)
+
+  def mode: Mode = {
+    Option(System.getenv("PLAYFRAMEWORK_MODE"))
+        .filter(_ == "Dev")
+        .map(_ => Mode.Dev)
+        .getOrElse(Mode.Prod)
+  }
 
   @volatile
   private var application: Application = _
@@ -29,8 +36,8 @@ final class PlayServlet extends HttpServlet with ServletContextListener with Ser
     val application: Application = {
 
       val environment = Environment(new File(rootDir), this.getClass.getClassLoader, mode)
-      val context = ApplicationLoader.createContext(environment)
-      val loader = ApplicationLoader(context)
+      val context     = ApplicationLoader.createContext(environment)
+      val loader      = ApplicationLoader(context)
       loader.load(context)
     }
 
@@ -40,6 +47,14 @@ final class PlayServlet extends HttpServlet with ServletContextListener with Ser
   override def contextInitialized(sce: ServletContextEvent): Unit = {
     application = start(sce)
     Play.start(application)
+
+    val registration = sce.getServletContext.addServlet("play", this)
+    try {
+      registration.setAsyncSupported(true)
+    } catch {
+      case _ @(_: IllegalStateException | _: NullPointerException) => logger.error("async is not supported")
+    }
+    registration.addMapping("/*")
   }
 
   override def contextDestroyed(sce: ServletContextEvent): Unit = {
@@ -56,7 +71,7 @@ final class PlayServlet extends HttpServlet with ServletContextListener with Ser
     override def get: Try[Application] = Success(application)
   }
 
-  override def httpPort: Option[Int] = config.port
+  override def httpPort: Option[Int]  = config.port
   override def httpsPort: Option[Int] = config.sslPort
   override def mainAddress(): InetSocketAddress = {
     val port: Int = httpsPort.orElse(httpPort).getOrElse(80)
@@ -67,7 +82,6 @@ final class PlayServlet extends HttpServlet with ServletContextListener with Ser
   private val requestHandler: PlayRequestHandler = new PlayRequestHandler(this)
 
   override protected def service(request: HttpServletRequest, resp: HttpServletResponse): Unit = {
-    println("X")
     requestHandler.handle(request, resp)
   }
 

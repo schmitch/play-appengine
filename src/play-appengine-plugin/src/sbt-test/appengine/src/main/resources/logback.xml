@@ -1,0 +1,65 @@
+<configuration>
+
+    <conversionRule conversionWord="coloredLevel" converterClass="play.api.libs.logback.ColoredLevel"/>
+
+    <!--<appender name="FILE" class="ch.qos.logback.core.FileAppender">-->
+    <!--<file>invoice.log</file>-->
+    <!--<encoder>-->
+    <!--<pattern>[%level] %date{HH:mm:ss}: - %message%n</pattern>-->
+    <!--</encoder>-->
+    <!--</appender>-->
+
+    <!--<appender name="ASYNCFILE" class="ch.qos.logback.classic.AsyncAppender">-->
+    <!--<appender-ref ref="FILE" />-->
+    <!--</appender>-->
+
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>[%thread] %coloredLevel %logger{15} - %message%n%xException{10}</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="ASYNCSTDOUT" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="STDOUT"/>
+    </appender>
+
+    <logger name="play" level="INFO"/>
+    <logger name="play.core.server.netty" level="WARN"/>
+    <logger name="modules.SystemProperty" level="OFF"/>
+    <logger name="play.api.libs.ws.ssl.SSLConfigParser" level="OFF"/>
+    <logger name="application" level="INFO" additivity="false">
+        <appender-ref ref="ASYNCSTDOUT"/>
+    </logger>
+
+    <logger name="demo" level="DEBUG"/>
+    <logger name="controllers" level="DEBUG"/>
+    <logger name="envisia" level="DEBUG"/>
+    <logger name="worker" level="DEBUG"/>
+    <logger name="filters" level="DEBUG"/>
+    <!--<logger name="com.google.inject" level="TRACE"/>-->
+
+    <logger name="auth" level="DEBUG"/>
+    <logger name="EnvisiaErrorHandler" level="DEBUG"/>
+
+    <logger name="envisia.history" level="OFF" />
+    <logger name="envisia.job.worker" level="INFO"/>
+
+    <!-- Database Statement Logs and results -->
+    <logger name="org.jdbcdslog.ConnectionLogger" level="OFF"/> <!-- Won' log connections -->
+    <logger name="org.jdbcdslog.StatementLogger" level="DEBUG"/> <!-- Will log all statements -->
+    <logger name="org.jdbcdslog.ResultSetLogger" level="OFF"/> <!-- Won' log result sets -->
+
+    <!--<logger name="com.ning.http.client" level="DEBUG" />-->
+    <!--<logger name="play.api.libs.ws" level="DEBUG" />-->
+    <logger name="com.gargoylesoftware.htmlunit.javascript" level="OFF"/>
+
+    <logger name="envisia.invoice" level="INFO">
+        <!--<appender-ref ref="ASYNCFILE"/>-->
+    </logger>
+
+    <root level="WARN">
+        <appender-ref ref="ASYNCSTDOUT"/>
+    </root>
+
+</configuration>

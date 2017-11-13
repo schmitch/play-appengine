@@ -31,13 +31,7 @@ private[servlet] final class WriteListenerAdapter(
     waitIfNotInitialized()
     do {
       try {
-        val elem = sharedBuffer.poll(writeTimeout.toMillis, TimeUnit.MILLISECONDS)
-        elem match {
-          case Data(_) =>
-          case _ => println(s"Current Element: $elem")
-        }
-
-         elem match {
+          sharedBuffer.poll(writeTimeout.toMillis, TimeUnit.MILLISECONDS) match {
           case Data(data) =>
             writeBytes(data)
           case Finished =>

@@ -1,25 +1,28 @@
 package play.core.server.servlet
 
+import java.io.{ OutputStream, PipedInputStream, PipedOutputStream }
 import java.net.{ InetAddress, InetSocketAddress, URI }
 import java.security.cert.X509Certificate
 import java.time.Instant
 import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 
-import akka.stream.{ IOResult, Materializer }
-import akka.stream.scaladsl.Source
+import akka.stream._
+import akka.stream.scaladsl.{ Keep, Sink, Source, StreamConverters }
 import akka.util.ByteString
 import play.api.Logger
+import play.api.http.HeaderNames._
 import play.api.http.{ HeaderNames, HttpChunk, HttpEntity, HttpErrorHandler }
+import play.api.libs.streams.Accumulator
 import play.api.libs.typedmap.TypedMap
 import play.api.mvc.request.{ RemoteConnection, RequestAttrKey, RequestTarget }
 import play.api.mvc.{ RequestHeader, RequestHeaderImpl, ResponseHeader, Result }
 import play.core.server.common.{ ForwardedHeaderHandler, ServerResultUtils }
-import play.mvc.Http.Status
-import play.api.http.HeaderNames._
 import play.core.server.servlet.stream.{ AkkaStreamReadListener, AkkaStreamWriteListener }
+import play.mvc.Http.Status
 
 import scala.collection.JavaConverters._
-import scala.concurrent.Future
+import scala.concurrent.duration.Duration
+import scala.concurrent.{ Await, ExecutionContext, Future }
 import scala.util.Try
 
 class ServletModelConversion(
@@ -175,11 +178,23 @@ class ServletModelConversion(
     )
   }
 
+  private def syncRequestBody(
+      request: HttpServletRequest
+  )(implicit mat: Materializer, executionContext: ExecutionContext) = {
+    // we work in a threaded environment and need to be always on the
+    // request thread to read/write data
+    // if not, we actually can't write data
+    Some(StreamConverters.fromInputStream(() => request.getInputStream))
+  }
+
   /** Create the source for the request body */
-  def convertRequestBody(request: HttpServletRequest)(implicit mat: Materializer): Option[Source[ByteString, Any]] = {
+  def convertRequestBody(
+      request: HttpServletRequest
+  )(implicit mat: Materializer, executionContext: ExecutionContext): Option[Source[ByteString, Any]] = {
     // FIXME: try to read in a more blocking/compact fashion if body <= 4K
     if (ServletUtil.hasBody(request)) {
-      Some(AkkaStreamReadListener.fromServletInputStream(request.getInputStream))
+      if (request.isAsyncSupported) Some(AkkaStreamReadListener.fromServletInputStream(request.getInputStream))
+      else syncRequestBody(request)
     } else {
       None
     }
@@ -191,9 +206,9 @@ class ServletModelConversion(
       requestHeader: RequestHeader,
       protocol: String,
       errorHandler: HttpErrorHandler,
-      response: HttpServletResponse
+      response: HttpServletResponse,
+      asyncSupport: Boolean,
   )(implicit mat: Materializer): Future[IOResult] = {
-
     resultUtils.resultConversionWithErrorHandling(requestHeader, result, errorHandler) { result =>
       result.header.reasonPhrase match {
         case Some(phrase) => response.sendError(result.header.status, phrase)
@@ -202,22 +217,6 @@ class ServletModelConversion(
 
       val connectionHeader = resultUtils.determineConnectionHeader(requestHeader, result)
       val skipEntity       = requestHeader.method == "HEAD"
-
-      val future = result.body match {
-        case any if skipEntity =>
-          resultUtils.cancelEntity(any)
-          Future.successful(IOResult.createSuccessful(0))
-
-        // FIXME: faster strict values?
-        case HttpEntity.Strict(data, _) =>
-          createStreamedResponse(Source.single(data), response)
-
-        case HttpEntity.Streamed(stream, _, _) =>
-          createStreamedResponse(stream, response)
-
-        case HttpEntity.Chunked(chunks, _) =>
-          createChunkedResponse(chunks, response)
-      }
 
       // Set response headers
       val headers = resultUtils.splitSetCookieHeaders(result.header.headers)
@@ -255,7 +254,7 @@ class ServletModelConversion(
             s"Content-Type set both in header (${response.getHeader(CONTENT_TYPE)}) and attached to entity ($contentType), ignoring content type from entity. To remove this warning, use Result.as(...) to set the content type, rather than setting the header manually."
           )
         } else {
-          response.addHeader(CONTENT_TYPE, contentType)
+          response.setContentType(contentType)
         }
       }
 
@@ -268,7 +267,21 @@ class ServletModelConversion(
         response.addHeader(DATE, dateHeader)
       }
 
-      future
+      result.body match {
+        case any if skipEntity =>
+          resultUtils.cancelEntity(any)
+          Future.successful(IOResult.createSuccessful(0))
+
+        // FIXME: faster strict values?
+        case HttpEntity.Strict(data, _) =>
+          createStreamedResponse(Source.single(data), response, asyncSupport)
+
+        case HttpEntity.Streamed(stream, _, _) =>
+          createStreamedResponse(stream, response, asyncSupport)
+
+        case HttpEntity.Chunked(chunks, _) =>
+          createChunkedResponse(chunks, response, asyncSupport)
+      }
     } {
       // Fallback response
       response.setStatus(Status.INTERNAL_SERVER_ERROR)
@@ -281,18 +294,30 @@ class ServletModelConversion(
 
   private def createStreamedResponse(
       stream: Source[ByteString, _],
-      response: HttpServletResponse
-  )(implicit mat: Materializer) = {
-    val outputStream = response.getOutputStream
-    val listener = stream.runWith(AkkaStreamWriteListener.fromServletOutputStream(outputStream))
-    outputStream.setWriteListener(listener)
-    listener.waitUntilFinished
+      response: HttpServletResponse,
+      asyncSupport: Boolean,
+  )(implicit mat: Materializer): Future[IOResult] = {
+    if (asyncSupport) {
+      val outputStream = response.getOutputStream
+      val listener     = stream.runWith(AkkaStreamWriteListener.fromServletOutputStream(outputStream))
+      outputStream.setWriteListener(listener)
+      listener.waitUntilFinished
+    } else {
+      // we work in a threaded environment and need to be always on the
+      // request thread to read/write data
+      // if not, we actually can't write data
+      val pipedInputStream = new PipedInputStream()
+      val ioResult         = stream.runWith(StreamConverters.fromOutputStream(() => new PipedOutputStream(pipedInputStream)))
+      IOUtils.copyLarge(pipedInputStream, response.getOutputStream)
+      ioResult
+    }
   }
 
   /** Create a servlet chunked response. */
   private def createChunkedResponse(
       chunks: Source[HttpChunk, _],
       response: HttpServletResponse,
+      asyncSupport: Boolean,
   )(implicit mat: Materializer) = {
 
     response.addHeader(TRANSFER_ENCODING, "chunked")
@@ -316,7 +341,7 @@ class ServletModelConversion(
           }
       }
 
-    createStreamedResponse(stream, response)
+    createStreamedResponse(stream, response, asyncSupport)
   }
 
   // cache the date header of the last response so we only need to compute it every second

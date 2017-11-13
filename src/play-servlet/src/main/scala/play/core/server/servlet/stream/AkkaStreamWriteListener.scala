@@ -39,8 +39,8 @@ private[servlet] object AkkaStreamWriteListener {
       writeTimeout: FiniteDuration = 30.seconds,
   ): Sink[ByteString, WriteListenerAdapter] = {
     Flow[ByteString]
-            .via(new AkkaStreamChunker(chunkSize))
-        .toMat(Sink.fromGraph(new AkkaStreamWriteListener(writeTimeout, outputStream)))(Keep.right)
+      .via(new AkkaStreamChunker(chunkSize))
+      .toMat(Sink.fromGraph(new AkkaStreamWriteListener(writeTimeout, outputStream)))(Keep.right)
   }
 
 }
