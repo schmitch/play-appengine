@@ -1,7 +1,7 @@
-
-
 TODO:
 
+- [ ] appengine-web.xml auslesen um default project herauszufinden
+      somit kann man auch ein error werfen, wenn es mehr als 2 default projecte geben würde
 - [ ] SBT Plugins
 - [ ] HttpServletResponse in HttpServletResponseWrapper wrappen für bessere Methoden
 - [ ] Support for WebSockets
