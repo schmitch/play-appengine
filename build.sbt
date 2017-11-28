@@ -31,7 +31,10 @@ val `play-servlet` = (project in file("src/play-servlet"))
 val `play-appengine-plugin` = (project in file("src/play-appengine-plugin"))
     .settings(
       sbtPlugin := true,
-      libraryDependencies += "com.google.cloud.tools" % "appengine-plugins-core" % appenginePluginsCoreVersion
+      libraryDependencies ++= Seq(
+        "com.google.cloud.tools" % "appengine-plugins-core" % appenginePluginsCoreVersion,
+        "com.lightbend.play" %% "play-file-watch" % "1.1.6"
+      )
     )
 
 val root = (project in file("."))

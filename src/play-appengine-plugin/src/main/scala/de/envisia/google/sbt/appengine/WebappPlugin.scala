@@ -8,7 +8,6 @@ import sbt.Def.settingKey
 import sbt.Keys._
 import sbt.FilesInfo.lastModified
 import sbt.FilesInfo.exists
-import sbt.FileFunction.cached
 
 object WebappPlugin extends AutoPlugin {
 
@@ -22,15 +21,16 @@ object WebappPlugin extends AutoPlugin {
 
   override def requires = plugins.JvmPlugin
 
-  override def projectSettings: Seq[Setting[_]] =
+  override def projectSettings: Seq[Setting[_]] = {
     Seq(
-      sourceDirectory in webappPrepare := (sourceDirectory in Compile).value / "webapp"
-      , target in webappPrepare          := (target in Compile).value / "webapp"
-      , webappPrepare                    := webappPrepareTask.value
-      , webappPostProcess                := { _ => () }
-      , webappWebInfClasses              := false
-      , Compat.watchSourceSetting
+      sourceDirectory in webappPrepare := (sourceDirectory in Compile).value / "webapp",
+      target in webappPrepare          := (target in Compile).value / "webapp",
+      webappPrepare                    := webappPrepareTask.value,
+      webappPostProcess                := { _ => () },
+      webappWebInfClasses              := false,
+      Compat.watchSourceSetting
     )
+  }
 
   private def webappPrepareTask = Def.task {
 

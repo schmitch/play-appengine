@@ -14,11 +14,19 @@ Option(System.getProperty("plugin.version")) match {
 }
 
 libraryDependencies += "com.google.appengine" % "appengine-api-1.0-sdk" % "1.9.59"
-
+updateOptions := updateOptions.value.withGigahorse(false)
 // libraryDependencies += "javax.servlet" % "javax.servlet-api" % "3.0.1" % "provided"
 
-enablePlugins(AppenginePlugin)
 
+// libraryDependencies += "com.google.cloud" % "google-cloud-logging-logback" % "0.28.0-alpha"
+
+lazy val cronJobModule = (project in file("module")).enablePlugins(WebappPlugin)
+.settings(libraryDependencies += "javax.servlet" % "javax.servlet-api" % "3.1.0" % Provided)
+
+lazy val root = (project in file(".")).enablePlugins(WebappPlugin)
+
+
+AE.defaultProject := Some(root)
 //webappPostProcess := {
 //  val s = streams.value.log
 //  webappDir =>

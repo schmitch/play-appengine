@@ -1,0 +1,13 @@
+<web-app xmlns="http://java.sun.com/xml/ns/j2ee" version="3.1">
+
+    <servlet>
+        <servlet-name>schnarchServlet</servlet-name>
+        <servlet-class>demo.SchnarchServlet</servlet-class>
+    </servlet>
+
+    <servlet-mapping>
+        <servlet-name>schnarchServlet</servlet-name>
+        <url-pattern>/</url-pattern>
+    </servlet-mapping>
+
+</web-app>
