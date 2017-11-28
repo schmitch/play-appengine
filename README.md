@@ -1,3 +1,5 @@
+# WARNING: DO NOT RUN THIS IN PRODUCTION, it's just a hint that it may be possible now to run a play app on appengine
+
 TODO:
 
 - [ ] appengine-web.xml auslesen um default project herauszufinden
