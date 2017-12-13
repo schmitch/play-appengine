@@ -1,13 +1,5 @@
 # WARNING: DO NOT RUN THIS IN PRODUCTION, it's just a hint that it may be possible now to run a play app on appengine
 
-TODO:
-
-- [ ] appengine-web.xml auslesen um default project herauszufinden
-      somit kann man auch ein error werfen, wenn es mehr als 2 default projecte geben würde
-- [ ] SBT Plugins
-- [ ] HttpServletResponse in HttpServletResponseWrapper wrappen für bessere Methoden
-- [ ] Support for WebSockets
-
 Development:
 
 sbt publishLocal && (cd src/play-appengine-plugin/src/sbt-test/appengine; sbt -Dplugin.version=0.1.0-SNAPSHOT runAll; cd -)
