@@ -12,18 +12,20 @@ case class ScalaRunAppConfiguration(
     port: Int = 9090
 ) extends RunConfiguration {
   // Must Have Settings
-  override def getServices: java.util.List[File] = new java.util.ArrayList[File](services.asJava)
-  override def getHost: String = "localhost"
-  override def getPort: Integer = port
+  override lazy val getServices: java.util.List[File] = {
+    new java.util.ArrayList[File](services.asJava)
+  }
+  override lazy val getHost: String = "localhost"
+  override lazy val getPort: Integer = port
 
   // JVM Settings
-  override def getAdditionalArguments: java.util.List[String] = java.util.Collections.emptyList()
-  override def getJvmFlags: java.util.List[String] = java.util.Collections.emptyList()
+  override lazy val getAdditionalArguments: java.util.List[String] = java.util.Collections.emptyList()
+  override lazy val getJvmFlags: java.util.List[String] = java.util.Collections.emptyList()
 
   // Useful settings
-  override def getAutomaticRestart: java.lang.Boolean = true
-  override def getEnvironment: java.util.Map[String, String] = Map("PLAYFRAMEWORK_MODE" -> "Dev").asJava
-  override def getDefaultGcsBucketName: String = defaultBucketName
+  override lazy val getAutomaticRestart: java.lang.Boolean = true
+  override lazy val getEnvironment: java.util.Map[String, String] = Map("PLAYFRAMEWORK_MODE" -> "Dev").asJava
+  override lazy val getDefaultGcsBucketName: String = defaultBucketName
 
   // nullable settings
   override def getRuntime: String = null

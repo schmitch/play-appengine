@@ -24,7 +24,9 @@
   <automatic-scaling>
     <min-idle-instances>1</min-idle-instances>
     <max-idle-instances>1</max-idle-instances>
-    <max-concurrent-requests>50</max-concurrent-requests>
+    <max-concurrent-requests>100</max-concurrent-requests>
+    <min-pending-latency>500ms</min-pending-latency>
+    <max-pending-latency>automatic</max-pending-latency>
   </automatic-scaling>
 
 </appengine-web-app>

@@ -6,7 +6,7 @@ updateOptions in ThisBuild := updateOptions.value.withGigahorse(false)
 val playVersion = "2.6.7"
 
 val jettyVersion = "9.4.7.v20170914"
-val appenginePluginsCoreVersion = "0.3.9"
+
 
 val `play-servlet` = (project in file("src/play-servlet"))
     .settings(
@@ -31,10 +31,7 @@ val `play-servlet` = (project in file("src/play-servlet"))
 val `play-appengine-plugin` = (project in file("src/play-appengine-plugin"))
     .settings(
       sbtPlugin := true,
-      libraryDependencies ++= Seq(
-        "com.google.cloud.tools" % "appengine-plugins-core" % appenginePluginsCoreVersion,
-        "com.lightbend.play" %% "play-file-watch" % "1.1.6"
-      )
+      libraryDependencies ++= Dependencies.sbtDependencies(sbtVersion.value, scalaVersion.value)
     )
 
 val root = (project in file("."))

@@ -14,28 +14,6 @@ class DemoApplicationLoader extends ApplicationLoader {
 
   private val logger = Logger(this.getClass)
 
-  class DemoController(components: ControllerComponents) extends AbstractController(components) {
-
-    val int = new AtomicInteger(0)
-    val background = new Thread(new Runnable {
-      override def run(): Unit = {
-        while (!Thread.interrupted()) {
-          int.incrementAndGet();
-          Thread.sleep(15000)
-        }
-      }
-    })
-
-    val tp = Executors.newFixedThreadPool(1)
-    tp.execute(background)
-
-    def home = Action { implicit request =>
-      logger.info("hello world")
-      Ok(s"hase ${request.body} ${int.get()}")
-    }
-
-  }
-
   override def load(context: ApplicationLoader.Context): Application = {
     new BuiltInComponentsFromContext(context) {
       val demoController = new DemoController(controllerComponents)

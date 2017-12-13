@@ -1,3 +1,4 @@
+
 name := "envisia-appengine-test"
 
 scalaVersion := "2.12.4"
@@ -23,10 +24,9 @@ updateOptions := updateOptions.value.withGigahorse(false)
 lazy val cronJobModule = (project in file("module")).enablePlugins(WebappPlugin)
 .settings(libraryDependencies += "javax.servlet" % "javax.servlet-api" % "3.1.0" % Provided)
 
-lazy val root = (project in file(".")).enablePlugins(WebappPlugin)
+lazy val root = (project in file(".")).enablePlugins(WebappRootPlugin, WebappPlugin, AppenginePlayPlugin)
 
-
-AE.defaultProject := Some(root)
+AE.deployProject := "hase"
 //webappPostProcess := {
 //  val s = streams.value.log
 //  webappDir =>

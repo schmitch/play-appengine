@@ -11,6 +11,7 @@ import play.api._
 import play.core.ApplicationProvider
 import play.core.server.servlet.PlayRequestHandler
 
+import scala.util.control.NonFatal
 import scala.util.{ Success, Try }
 
 // We only need to register the WebListener, since the Servlet will register itself
@@ -22,9 +23,9 @@ final class PlayServlet extends HttpServlet with ServletContextListener with Ser
 
   def mode: Mode = {
     Option(System.getenv("PLAYFRAMEWORK_MODE"))
-        .filter(_ == "Dev")
-        .map(_ => Mode.Dev)
-        .getOrElse(Mode.Prod)
+      .filter(_ == "Dev")
+      .map(_ => Mode.Dev)
+      .getOrElse(Mode.Prod)
   }
 
   @volatile

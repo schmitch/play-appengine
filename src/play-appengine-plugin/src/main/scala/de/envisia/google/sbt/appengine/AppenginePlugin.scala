@@ -8,23 +8,22 @@ import com.google.cloud.tools.appengine.api.deploy.{ DefaultDeployConfiguration,
 import com.google.cloud.tools.appengine.cloudsdk._
 import com.google.cloud.tools.appengine.cloudsdk.process.{ NonZeroExceptionExitListener, ProcessOutputLineListener }
 import sbt.Def.Initialize
-import sbt.Keys._
+import sbt.Keys.{ watchSources, _ }
 import sbt._
-import sbt.plugins.JvmPlugin
 
 import scala.collection.JavaConverters._
 
 object AppenginePlugin extends AutoPlugin {
-  override def requires: Plugins      = JvmPlugin
+  override def requires: Plugins      = WebappRootPlugin
   override def trigger: PluginTrigger = allRequirements
 
   object autoImport {
     object AE {
       // Both
-      lazy val runtime = settingKey[String]("appengine runtime version")
-      lazy val envVariables = settingKey[Seq[(String, String)]]("appengine env variables")
+      lazy val runtime          = settingKey[String]("appengine runtime version")
+      lazy val envVariables     = settingKey[Seq[(String, String)]]("appengine env variables")
+      lazy val devServerVersion = settingKey[DevServerVersion]("appengine dev server version")
       // Development
-      lazy val defaultProject    = settingKey[Option[Project]]("default project") // FIXME: remove and use appengine-web.xml
       lazy val defaultBucketName = settingKey[Option[String]]("default bucket name")
       lazy val devEnvVariables   = settingKey[Seq[(String, String)]]("development env variables")
       // Deployment
@@ -34,8 +33,8 @@ object AppenginePlugin extends AutoPlugin {
       lazy val deployEnvVariables        = settingKey[Seq[(String, String)]]("deploy env variables")
     }
 
-    lazy val runApp    = taskKey[Unit]("run appengine")
-    lazy val deployApp = taskKey[Unit]("deploy task")
+    lazy val runAll    = taskKey[Unit]("run appengine")
+    lazy val deployAll = taskKey[Unit]("deploy task")
   }
 
   import WebappPlugin.autoImport._
@@ -64,6 +63,33 @@ object AppenginePlugin extends AutoPlugin {
     }
   }
 
+  private lazy val innerWatchSources: Initialize[Task[Seq[Watched.WatchSource]]] = Def.taskDyn {
+    val projects = webAppProjects.value
+    val filter   = ScopeFilter(inProjects(projects: _*))
+    Def.task {
+      watchSources.all(filter).value.flatten
+    }
+  }
+
+  private lazy val defaultProjectTask = Def.taskDyn {
+    val projects = webAppProjects.value
+    val filter   = ScopeFilter(inProjects(projects: _*))
+    Def.task {
+      val values = webappAppengineWebXmlRead.all(filter).value
+      val current = values.flatMap {
+        case Some((node, ref)) =>
+          val name = (node \\ "service").headOption.map(_.text)
+          if (name.isEmpty || name.contains("default")) Some(ref)
+          else None
+        case None => None
+      }
+
+      if (current.length == 1) current.head
+      else if (current.isEmpty) throw new Exception("could not detect a default project")
+      else throw new Exception("multiple default projects detected, please check your appengine-web.xml")
+    }
+  }
+
   private def dynamicPrepareAll = Def.taskDyn {
     val projects = webAppProjects.value
     val filter   = ScopeFilter(inProjects(projects: _*))
@@ -77,15 +103,16 @@ object AppenginePlugin extends AutoPlugin {
   private def runAppTask = Def.taskDyn {
     val logger = streams.value.log
     // runs all projects and filters out the default project
-    val projects              = webAppProjects.value
-    val defaultProjectSetting = AE.defaultProject.value
-    val defaultProjectList    = defaultProjectSetting.map(ref => Seq(ref)).getOrElse(Nil)
+    val projects       = webAppProjects.value
+    val defaultProject = defaultProjectTask.value
     // filters the projects based on the project name
     // (currently there is no way to actually compare the project ref directly)
-    val filteredProjects = projects.filterNot(p => defaultProjectList.exists(dp => dp.id == p.project))
+    val filteredProjects = projects.filterNot(p => defaultProject.project == p.project)
 
     val filter       = ScopeFilter(inProjects(filteredProjects: _*))
-    val singleFilter = ScopeFilter(inProjects(defaultProjectList.map(_.project): _*))
+    val singleFilter = ScopeFilter(inProjects(defaultProject))
+
+    val devServerVersion = AE.devServerVersion.value
 
     Def.task {
       val defaultService = (target in webappPrepare).all(singleFilter).value
@@ -108,7 +135,11 @@ object AppenginePlugin extends AutoPlugin {
       // stop.setAdminPort(9091)
 
       val runConfig = ScalaRunAppConfiguration(defaultService ++ services)
-      new CloudSdkAppEngineDevServer1(sdk).run(runConfig)
+      val tooling = devServerVersion match {
+        case DevServerVersion.V1 => new CloudSdkAppEngineDevServer1(sdk)
+        case DevServerVersion.V2 => new CloudSdkAppEngineDevServer2(sdk)
+      }
+      tooling.run(runConfig)
     }
   }
 
@@ -168,7 +199,12 @@ object AppenginePlugin extends AutoPlugin {
   }
 
   private def getProjectName = {
-    val projectName = sys.env("APPENGINE_PROJECT")
+    val projectName = sys.env.getOrElse(
+      "APPENGINE_PROJECT",
+      throw new Exception(
+        "Please set either `AE.deployProject` or the Environment Variable `APPENGINE_PROJECT` to your AppEngine project name"
+      )
+    )
     projectName
   }
 
@@ -177,8 +213,8 @@ object AppenginePlugin extends AutoPlugin {
       // Both
       AE.runtime := "java8",
       AE.envVariables := Nil,
+      AE.devServerVersion := DevServerVersion.V2,
       // Development
-      AE.defaultProject := None,
       AE.defaultBucketName := None,
       AE.devEnvVariables := ("PLAYFRAMEWORK_MODE" -> "Dev") +: AE.envVariables.value,
       // Deploy
@@ -187,8 +223,9 @@ object AppenginePlugin extends AutoPlugin {
       AE.deployStopPreviousVersion := true,
       AE.deployEnvVariables := AE.envVariables.value,
       // Run Tasks
-      runApp := runAppTask.dependsOn(dynamicPrepareAll).value,
-      deployApp := deployAppTask.value,
-    ) ++ dontAggregate(runApp, deployApp)
+      runAll := runAppTask.dependsOn(dynamicPrepareAll).value,
+      deployAll := deployAppTask.dependsOn(dynamicPrepareAll).value,
+      watchSources ++= innerWatchSources.value
+    ) ++ dontAggregate(runAll, deployAll)
 
 }
