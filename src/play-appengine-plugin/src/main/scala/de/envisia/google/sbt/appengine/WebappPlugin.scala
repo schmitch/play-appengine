@@ -33,7 +33,7 @@ object WebappPlugin extends AutoPlugin {
       webappAppengineWebXmlRead := webappAppengineWebXmlReadTask.value,
       sourceDirectory in webappPrepare := (sourceDirectory in Compile).value / "webapp",
       target in webappPrepare := (target in Compile).value / "webapp",
-      webappPrepare := webappAppengineWebXmlAppendTask.dependsOn(webappPrepareTask).value,
+      webappPrepare := webappPrepareTask.dependsOn(webappAppengineWebXmlAppendTask).value,
       webappPostProcess := { _ =>
         ()
       },

@@ -3,7 +3,6 @@ package play.core.server.servlet
 import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 
 import akka.stream.{ IOResult, Materializer }
-import akka.util.ByteString
 import play.api.http.{ DefaultHttpErrorHandler, HeaderNames, HttpErrorHandler, Status }
 import play.api.libs.streams.Accumulator
 import play.api.mvc._
@@ -17,7 +16,7 @@ import scala.util.{ Failure, Success, Try }
 
 final class PlayRequestHandler(servlet: PlayServlet) {
 
-  private val logger: Logger = Logger(classOf[PlayServlet])
+  private val logger: Logger = Logger(this.getClass)
 
   /**
    * Values that are cached based on the current application.
@@ -53,20 +52,13 @@ final class PlayRequestHandler(servlet: PlayServlet) {
     import play.core.Execution.Implicits.trampoline
     logger.trace(s"Http Request received by servlet: ${request.getPathInfo}")
     logger.trace(s"Http Request supports Async: ${request.isAsyncSupported}")
+    val wrapper = ServletRequestWrapper(request, response)
 
-    val asyncContext = {
-      if (request.isAsyncStarted) Some(request.startAsync())
-      else None
-    }
-
-    // FIXME: set request timeout
-    // asyncContext.setTimeout()
-
-    val tryRequest: Try[RequestHeader] = modelConversion.convertRequest(request)
+    val tryRequest: Try[RequestHeader] = modelConversion.convertRequest(wrapper)
 
     def clientError(statusCode: Int, message: String) = {
       val unparsedTarget = modelConversion.createUnparsedRequestTarget(request)
-      val requestHeader  = modelConversion.createRequestHeader(request, unparsedTarget)
+      val requestHeader  = modelConversion.createRequestHeader(wrapper, unparsedTarget)
       val result = errorHandler(servlet.applicationProvider.current)
         .onClientError(requestHeader, statusCode, if (message == null) "" else message)
       // If there's a problem in parsing the request, then we should close the connection, once done with it
@@ -83,7 +75,7 @@ final class PlayRequestHandler(servlet: PlayServlet) {
         }
     }
 
-    (resultOrHandler match {
+    val awaitable = resultOrHandler match {
       // execute normal action
       case Right((action: EssentialAction, app)) =>
         val recovered = EssentialAction { rh =>
@@ -91,14 +83,15 @@ final class PlayRequestHandler(servlet: PlayServlet) {
             case error => app.errorHandler.onServerError(rh, error)
           }
         }
-        handleAction(recovered, requestHeader, request, Some(app), response)
+        logger.trace("Handler Found call handleAction")
+        handleAction(recovered, requestHeader, wrapper, Some(app))
 
       // FIXME: unsuported
       //handle websocket request, which we do not support
       case Right((ws: WebSocket, app)) =>
         logger.trace("Bad websocket request")
         val action = EssentialAction(_ => Accumulator.done(Results.Status(Status.BAD_REQUEST)))
-        handleAction(action, requestHeader, request, Some(app), response)
+        handleAction(action, requestHeader, wrapper, Some(app))
 
       // This case usually indicates an error in Play's internal routing or handling logic
       case Right((h, _)) =>
@@ -109,21 +102,59 @@ final class PlayRequestHandler(servlet: PlayServlet) {
       case Left(e) =>
         logger.trace("No handler, got direct result: " + e)
         val action = EssentialAction(_ => Accumulator.done(e))
-        handleAction(action, requestHeader, request, None, response)
-    }).onComplete {
-      // complete the context, no matter if we have an error or not
-      case Success(_) =>
-        logger.trace("Request completed")
-        asyncContext match {
-          case Some(context) => context.complete()
-          case None          => response.flushBuffer()
-        }
-      case Failure(_) =>
-        logger.trace("Request completed with failure")
-        sendSimpleErrorResponse(Status.SERVICE_UNAVAILABLE, response)
-        asyncContext match {
-          case Some(context) => context.complete()
-          case None          => response.flushBuffer()
+        handleAction(action, requestHeader, wrapper, None)
+    }
+
+    implicit val mat: Materializer = servlet.materializer
+    import play.core.Execution.Implicits.trampoline
+    wrapper.async match {
+      case Some(_) =>
+        awaitable
+          .map { wrapper =>
+            wrapper.writeResponseHeader()
+            wrapper.writeResponseBody()
+          }
+          .onComplete {
+            // complete the context, no matter if we have an error or not
+            case Success(_) =>
+              logger.trace("Request completed")
+              wrapper.async match {
+                case Some(_) =>
+                case None    => response.flushBuffer()
+              }
+            case Failure(t) =>
+              logger.trace("Request completed with failure", t)
+              sendSimpleErrorResponse(Status.SERVICE_UNAVAILABLE, response)
+              wrapper.async match {
+                case Some(_) =>
+                case None    => response.flushBuffer()
+              }
+          }
+      case None =>
+        // currently we await 30 seconds for sync request until
+        // we cancel them and return a error response
+        val responeWithMaterializedBody =
+          awaitable.flatMap(response => response.writeResponseBodySync().map((response, _)))
+
+        response.setBufferSize(8192) // FIXME: make bufferSize and timeout configurable
+        Try(Await.result(responeWithMaterializedBody, 30.seconds)) match {
+          case Success((resultResponse, body)) =>
+            resultResponse.writeResponseHeader()
+            body.foreach { responseBody =>
+              val os = response.getOutputStream
+              logger.trace(s"Try Writing Body")
+              Try(os.write(responseBody)) match {
+                case Success(_) => logger.trace("Body written")
+                case Failure(t) => logger.trace("Body could not be written")
+              }
+              os.flush()
+              os.close()
+            }
+            response.flushBuffer()
+          case Failure(t) =>
+            logger.trace("Request completed with failure", t)
+            sendSimpleErrorResponse(Status.SERVICE_UNAVAILABLE, response)
+            response.flushBuffer()
         }
     }
   }
@@ -137,33 +168,20 @@ final class PlayRequestHandler(servlet: PlayServlet) {
   private def handleAction(
       action: EssentialAction,
       requestHeader: RequestHeader,
-      request: HttpServletRequest,
+      wrapper: ServletRequestWrapper,
       app: Option[Application],
-      response: HttpServletResponse
-  ): Future[IOResult] = {
+  ): Future[ServletResponseWrapper] = {
     implicit val mat: Materializer = app.fold(servlet.materializer)(_.materializer)
     import play.core.Execution.Implicits.trampoline
 
-    val actionFuture = {
-      def createActionFuture = Future(action(requestHeader))(mat.executionContext)
-      // if async is un-supported we actually await the current future
-      // and block the request thread :(
-      if (request.isAsyncSupported) createActionFuture
-      else Future.successful(Await.result(createActionFuture, Duration.Inf))
-    }
-
     for {
-      bodyParser <- actionFuture
+      bodyParser <- Future(action(requestHeader))(mat.executionContext)
       actionResult <- {
-        val body = modelConversion.convertRequestBody(request)
-        (body match {
+        val bodyFuture = modelConversion.convertRequestBody(wrapper) match {
           case None         => bodyParser.run()
-          case Some(source) =>
-            // if async is un-supported we actually await the current future
-            // and block the request thread :(
-            if (request.isAsyncSupported) bodyParser.run(source)
-            else Future.successful(Await.result(bodyParser.run(source), Duration.Inf))
-        }).recoverWith {
+          case Some(source) => bodyParser.run(source)
+        }
+        bodyFuture.recoverWith {
           case error =>
             logger.error("Cannot invoke the action", error)
             errorHandler(app).onServerError(requestHeader, error)
@@ -180,10 +198,8 @@ final class PlayRequestHandler(servlet: PlayServlet) {
         modelConversion.convertResult(
           validatedResult,
           requestHeader,
-          request.getProtocol,
-          errorHandler(app),
-          response,
-          request.isAsyncSupported
+          wrapper,
+          errorHandler(app)
         )
       }
     } yield convertedResult

@@ -1,12 +1,8 @@
 package de.envisia.google.sbt.appengine
 
-import java.nio.file.Files
-
 import com.typesafe.sbt.jse.SbtJsTask
-import com.typesafe.sbt.web.Import.WebKeys.{ assets, jsFilter }
 import sbt.Keys._
 import sbt._
-import com.typesafe.sbt.web.SbtWeb.autoImport._
 import de.envisia.google.sbt.appengine.xml.XmlHelper
 import play.TemplateImports
 import play.sbt.routes.{ RoutesCompiler, RoutesKeys }
@@ -21,10 +17,24 @@ object AppenginePlayPlugin extends AutoPlugin {
 
   object autoImport {
     val PlayVersion = settingKey[String]("play version")
+
+    object PlayAppEngineKeys {
+      val assetsPrefix = SettingKey[String]("assetsPrefix")
+      val playPrefixAndAssets = TaskKey[(String, File)]("playPrefixAndAssets", "Gets all the assets with their associated prefixes")
+      val playPackageAssets = TaskKey[File]("playPackageAssets")
+    }
+
   }
 
   import autoImport._
+  import autoImport.PlayAppEngineKeys._
   import WebappPlugin.autoImport._
+  import com.typesafe.sbt.web.SbtWeb.autoImport._
+  import WebKeys._
+
+  val playPrefixAndAssetsSetting = playPrefixAndAssets := {
+    assetsPrefix.value -> (WebKeys.public in Assets).value
+  }
 
   private def updateWebXmlTask: Def.Initialize[Task[Seq[(File, String)]]] = Def.task {
     val baseXml = <web-app xmlns="http://java.sun.com/xml/ns/j2ee" version="3.1"></web-app>
@@ -43,6 +53,15 @@ object AppenginePlayPlugin extends AutoPlugin {
       <listener><listener-class>play.core.server.PlayServlet</listener-class></listener>
     )
     XML.save(webXml.toString, newElement)
+    Nil
+  }
+
+  private def copyAssetsTask: Def.Initialize[Task[Seq[(File, String)]]] = Def.task {
+
+    val value = (packageBin in Assets).value
+
+    println(s"Assets Package: $value")
+
     Nil
   }
 
@@ -82,20 +101,24 @@ object AppenginePlayPlugin extends AutoPlugin {
     // sbt-web
     jsFilter in Assets := new PatternFilter("""[^_].*\.js""".r.pattern),
     WebKeys.stagingDirectory := WebKeys.stagingDirectory.value / "public",
-    /*
-    playAssetsWithCompilation := {
-      val ignore = ((assets in Assets) ?).value
-      getPlayAssetsWithCompilation((compile in Compile).value)
-    },
+    WebKeys.exportedMappings in Assets := Nil,
+
+    // playAssetsWithCompilation := {
+    //   val ignore = ((assets in Assets) ?).value
+    //   getPlayAssetsWithCompilation((compile in Compile).value)
+    // },
     // Assets for run mode
-    PlayRun.playPrefixAndAssetsSetting,
-    PlayRun.playAllAssetsSetting,
+    // PlayRun.playPrefixAndAssetsSetting,
+    // PlayRun.playAllAssetsSetting,
     assetsPrefix := "public/",
     // Assets for distribution
     WebKeys.packagePrefix in Assets := assetsPrefix.value,
+    playPackageAssets := (packageBin in Assets).value,
+
+    webappPrepare := webappPrepare.dependsOn(copyAssetsTask).value,
+
     // Assets for testing
     public in TestAssets := (public in TestAssets).value / assetsPrefix.value,
-     */
     fullClasspath in Test += Attributed.blank((assets in TestAssets).value.getParentFile)
   )
 

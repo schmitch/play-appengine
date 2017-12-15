@@ -26,6 +26,7 @@ lazy val cronJobModule = (project in file("module")).enablePlugins(WebappPlugin)
 
 lazy val root = (project in file(".")).enablePlugins(WebappRootPlugin, WebappPlugin, AppenginePlayPlugin)
 
+AE.devServerVersion := de.envisia.google.sbt.appengine.DevServerVersion.V2
 AE.deployProject := "hase"
 //webappPostProcess := {
 //  val s = streams.value.log

@@ -20,9 +20,10 @@ object AppenginePlugin extends AutoPlugin {
   object autoImport {
     object AE {
       // Both
-      lazy val runtime          = settingKey[String]("appengine runtime version")
-      lazy val envVariables     = settingKey[Seq[(String, String)]]("appengine env variables")
-      lazy val devServerVersion = settingKey[DevServerVersion]("appengine dev server version")
+      lazy val runtime               = settingKey[String]("appengine runtime version")
+      lazy val envVariables          = settingKey[Seq[(String, String)]]("appengine env variables")
+      lazy val devServerVersion      = settingKey[DevServerVersion]("appengine dev server version")
+      lazy val devServerMaxInstances = settingKey[Int]("appengine dev server max instances")
       // Development
       lazy val defaultBucketName = settingKey[Option[String]]("default bucket name")
       lazy val devEnvVariables   = settingKey[Seq[(String, String)]]("development env variables")
@@ -113,6 +114,7 @@ object AppenginePlugin extends AutoPlugin {
     val singleFilter = ScopeFilter(inProjects(defaultProject))
 
     val devServerVersion = AE.devServerVersion.value
+    val devServerMaxInstances = AE.devServerMaxInstances.value
 
     Def.task {
       val defaultService = (target in webappPrepare).all(singleFilter).value
@@ -134,7 +136,7 @@ object AppenginePlugin extends AutoPlugin {
       // stop.setAdminHost("localhost")
       // stop.setAdminPort(9091)
 
-      val runConfig = ScalaRunAppConfiguration(defaultService ++ services)
+      val runConfig = ScalaRunAppConfiguration(defaultService ++ services, maxInstances = devServerMaxInstances)
       val tooling = devServerVersion match {
         case DevServerVersion.V1 => new CloudSdkAppEngineDevServer1(sdk)
         case DevServerVersion.V2 => new CloudSdkAppEngineDevServer2(sdk)
@@ -213,10 +215,11 @@ object AppenginePlugin extends AutoPlugin {
       // Both
       AE.runtime := "java8",
       AE.envVariables := Nil,
-      AE.devServerVersion := DevServerVersion.V2,
+      AE.devServerVersion := DevServerVersion.V1,
       // Development
       AE.defaultBucketName := None,
       AE.devEnvVariables := ("PLAYFRAMEWORK_MODE" -> "Dev") +: AE.envVariables.value,
+      AE.devServerMaxInstances := 1,
       // Deploy
       AE.deployProject := getProjectName,
       AE.deployPromote := true,

@@ -1,28 +1,23 @@
 package play.core.server.servlet
 
-import java.io.{ OutputStream, PipedInputStream, PipedOutputStream }
 import java.net.{ InetAddress, InetSocketAddress, URI }
 import java.security.cert.X509Certificate
-import java.time.Instant
-import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
+import javax.servlet.http.HttpServletRequest
 
 import akka.stream._
-import akka.stream.scaladsl.{ Keep, Sink, Source, StreamConverters }
+import akka.stream.scaladsl.Source
 import akka.util.ByteString
 import play.api.Logger
 import play.api.http.HeaderNames._
 import play.api.http.{ HeaderNames, HttpChunk, HttpEntity, HttpErrorHandler }
-import play.api.libs.streams.Accumulator
 import play.api.libs.typedmap.TypedMap
 import play.api.mvc.request.{ RemoteConnection, RequestAttrKey, RequestTarget }
-import play.api.mvc.{ RequestHeader, RequestHeaderImpl, ResponseHeader, Result }
+import play.api.mvc.{ RequestHeader, RequestHeaderImpl, Result }
 import play.core.server.common.{ ForwardedHeaderHandler, ServerResultUtils }
-import play.core.server.servlet.stream.{ AkkaStreamReadListener, AkkaStreamWriteListener }
 import play.mvc.Http.Status
 
 import scala.collection.JavaConverters._
-import scala.concurrent.duration.Duration
-import scala.concurrent.{ Await, ExecutionContext, Future }
+import scala.concurrent.{ ExecutionContext, Future }
 import scala.util.Try
 
 class ServletModelConversion(
@@ -54,7 +49,7 @@ class ServletModelConversion(
    *
    * Will return a failure if there's a protocol error or some other error in the header.
    */
-  def convertRequest(request: HttpServletRequest): Try[RequestHeader] = {
+  def convertRequest(request: ServletRequestWrapper): Try[RequestHeader] = {
     Try {
       val target: RequestTarget = createRequestTarget(request)
       createRequestHeader(request, target)
@@ -74,8 +69,8 @@ class ServletModelConversion(
   }
 
   /** Create request target information from a Netty request. */
-  private def createRequestTarget(request: HttpServletRequest): RequestTarget = {
-    val (baseUri, unsafePath, parsedQueryString) = parseUriAndPathAndQuery(request.getRequestURI)
+  private def createRequestTarget(wrapper: ServletRequestWrapper): RequestTarget = {
+    val (baseUri, unsafePath, parsedQueryString) = parseUriAndPathAndQuery(wrapper.request.getRequestURI)
     // wrapping into URI to handle absoluteURI and path validation
     val parsedPath = Option(new URI(unsafePath).getRawPath).getOrElse {
       // if the URI has a invalid path, this will trigger a 400 error
@@ -163,13 +158,13 @@ class ServletModelConversion(
    * of request processing. We'll pass it through the application's RequestFactory
    * later.
    */
-  def createRequestHeader(request: HttpServletRequest, target: RequestTarget): RequestHeader = {
-    val headers = convertRequestHeadersServlet(request)
+  def createRequestHeader(wrapper: ServletRequestWrapper, target: RequestTarget): RequestHeader = {
+    val headers = convertRequestHeadersServlet(wrapper.request)
     new RequestHeaderImpl(
-      createRemoteConnection(request, headers),
-      request.getMethod,
+      createRemoteConnection(wrapper.request, headers),
+      wrapper.request.getMethod,
       target,
-      request.getProtocol,
+      wrapper.request.getProtocol,
       headers,
       // Send an attribute so our tests can tell which kind of server we're using.
       // We only do this for the "non-default" engine, so we used to tag
@@ -178,151 +173,123 @@ class ServletModelConversion(
     )
   }
 
-  private def syncRequestBody(
-      request: HttpServletRequest
-  )(implicit mat: Materializer, executionContext: ExecutionContext) = {
-    // we work in a threaded environment and need to be always on the
-    // request thread to read/write data
-    // if not, we actually can't write data
-    Some(StreamConverters.fromInputStream(() => request.getInputStream))
-  }
-
   /** Create the source for the request body */
   def convertRequestBody(
-      request: HttpServletRequest
+      wrapper: ServletRequestWrapper
   )(implicit mat: Materializer, executionContext: ExecutionContext): Option[Source[ByteString, Any]] = {
-    // FIXME: try to read in a more blocking/compact fashion if body <= 4K
-    if (ServletUtil.hasBody(request)) {
-      if (request.isAsyncSupported) Some(AkkaStreamReadListener.fromServletInputStream(request.getInputStream))
-      else syncRequestBody(request)
-    } else {
-      None
-    }
+    wrapper.bodySource
   }
 
-  /** Create a Netty response from the result */
   def convertResult(
       result: Result,
       requestHeader: RequestHeader,
-      protocol: String,
-      errorHandler: HttpErrorHandler,
-      response: HttpServletResponse,
-      asyncSupport: Boolean,
-  )(implicit mat: Materializer): Future[IOResult] = {
+      wrapper: ServletRequestWrapper,
+      errorHandler: HttpErrorHandler
+  )(implicit mat: Materializer): Future[ServletResponseWrapper] = {
     resultUtils.resultConversionWithErrorHandling(requestHeader, result, errorHandler) { result =>
-      result.header.reasonPhrase match {
-        case Some(phrase) => response.sendError(result.header.status, phrase)
-        case None         => response.setStatus(result.header.status)
-      }
-
       val connectionHeader = resultUtils.determineConnectionHeader(requestHeader, result)
       val skipEntity       = requestHeader.method == "HEAD"
 
       // Set response headers
       val headers = resultUtils.splitSetCookieHeaders(result.header.headers)
+
       headers foreach {
-        case (name, value) => response.addHeader(name, value)
+        case (name, value) => wrapper.response.addHeader(name, value)
       }
 
       // Content type and length
-      if (resultUtils.mayHaveEntity(result.header.status)) {
-        result.body.contentLength.foreach { contentLength =>
-          if (ServletUtil.isContentLengthSet(response)) {
-            val manualContentLength = response.getHeader(CONTENT_LENGTH)
-            if (manualContentLength == contentLength.toString) {
-              logger.info(s"Manual Content-Length header, ignoring manual header.")
-            } else {
-              logger.warn(
-                s"Content-Length header was set manually in the header ($manualContentLength) but is not the same as actual content length ($contentLength)."
-              )
+      val contentLength = {
+        if (resultUtils.mayHaveEntity(result.header.status)) {
+          result.body.contentLength.map { contentLength =>
+            if (ServletUtil.isContentLengthSet(wrapper.response)) {
+              val manualContentLength = wrapper.response.getHeader(CONTENT_LENGTH)
+              if (manualContentLength == contentLength.toString) {
+                logger.info(s"Manual Content-Length header, ignoring manual header.")
+              } else {
+                logger.warn(
+                  s"Content-Length header was set manually in the header ($manualContentLength) but is not the same as actual content length ($contentLength)."
+                )
+              }
             }
+            contentLength
           }
-          ServletUtil.setContentLength(response, contentLength)
-        }
-      } else if (ServletUtil.isContentLengthSet(response)) {
-        val manualContentLength = response.getHeader(CONTENT_LENGTH)
-        logger.warn(
-          s"Ignoring manual Content-Length ($manualContentLength) since it is not allowed for ${result.header.status} responses."
-        )
-        // FIXME: does this work?, we might need to exclude it before
-        response.setHeader(CONTENT_LENGTH, null)
-      }
-      val responseHeaders = response.getHeaderNames.asScala.toList
-      result.body.contentType.foreach { contentType =>
-        if (responseHeaders.contains(CONTENT_TYPE)) {
+        } else if (ServletUtil.isContentLengthSet(wrapper.response)) {
+          val manualContentLength = wrapper.response.getHeader(CONTENT_LENGTH)
           logger.warn(
-            s"Content-Type set both in header (${response.getHeader(CONTENT_TYPE)}) and attached to entity ($contentType), ignoring content type from entity. To remove this warning, use Result.as(...) to set the content type, rather than setting the header manually."
+            s"Ignoring manual Content-Length ($manualContentLength) since it is not allowed for ${result.header.status} responses."
           )
+          None
         } else {
-          response.setContentType(contentType)
+          None
         }
       }
 
-      connectionHeader.header.foreach { headerValue =>
-        response.setHeader(CONNECTION, headerValue)
+      val responseHeaders = wrapper.response.getHeaderNames.asScala.toList
+      val contentType = {
+        result.body.contentType.flatMap { contentType =>
+          if (responseHeaders.contains(CONTENT_TYPE)) {
+            logger.warn(
+              s"Content-Type set both in header (${wrapper.response.getHeader(CONTENT_TYPE)}) and attached to entity ($contentType), ignoring content type from entity. To remove this warning, use Result.as(...) to set the content type, rather than setting the header manually."
+            )
+            None
+          } else {
+            Some(contentType)
+          }
+        }
       }
 
-      // Netty doesn't add the required Date header for us, so make sure there is one here
-      if (!responseHeaders.contains(DATE)) {
-        response.addHeader(DATE, dateHeader)
+      val (entity, encoding) = {
+        result.body match {
+          case any if skipEntity =>
+            resultUtils.cancelEntity(any)
+            (None, false)
+
+          // FIXME: faster strict values?
+          case HttpEntity.Strict(data, _) =>
+            (Some(Source.single(data)), false)
+
+          case HttpEntity.Streamed(stream, _, _) =>
+            (Some(stream), false)
+
+          case HttpEntity.Chunked(chunks, _) =>
+            (Some(createChunkedResponse(chunks)), true)
+        }
       }
-
-      result.body match {
-        case any if skipEntity =>
-          resultUtils.cancelEntity(any)
-          Future.successful(IOResult.createSuccessful(0))
-
-        // FIXME: faster strict values?
-        case HttpEntity.Strict(data, _) =>
-          createStreamedResponse(Source.single(data), response, asyncSupport)
-
-        case HttpEntity.Streamed(stream, _, _) =>
-          createStreamedResponse(stream, response, asyncSupport)
-
-        case HttpEntity.Chunked(chunks, _) =>
-          createChunkedResponse(chunks, response, asyncSupport)
-      }
+      Future.successful(
+        new ServletResponseWrapper(
+          result.header.status,
+          contentLength,
+          contentType,
+          result.header.reasonPhrase,
+          headers.toList,
+          entity,
+          encoding,
+          connectionHeader.header,
+          wrapper,
+          responseHeaders.contains(DATE)
+        )
+      )
     } {
       // Fallback response
-      response.setStatus(Status.INTERNAL_SERVER_ERROR)
-      response.setContentLength(0)
-      response.addHeader(DATE, dateHeader)
-      response.addHeader(CONNECTION, "close")
-      IOResult.createSuccessful(0)
-    }
-  }
-
-  private def createStreamedResponse(
-      stream: Source[ByteString, _],
-      response: HttpServletResponse,
-      asyncSupport: Boolean,
-  )(implicit mat: Materializer): Future[IOResult] = {
-    if (asyncSupport) {
-      val outputStream = response.getOutputStream
-      val listener     = stream.runWith(AkkaStreamWriteListener.fromServletOutputStream(outputStream))
-      outputStream.setWriteListener(listener)
-      listener.waitUntilFinished
-    } else {
-      // we work in a threaded environment and need to be always on the
-      // request thread to read/write data
-      // if not, we actually can't write data
-      val pipedInputStream = new PipedInputStream()
-      val ioResult         = stream.runWith(StreamConverters.fromOutputStream(() => new PipedOutputStream(pipedInputStream)))
-      IOUtils.copyLarge(pipedInputStream, response.getOutputStream)
-      ioResult
+      new ServletResponseWrapper(
+        Status.INTERNAL_SERVER_ERROR,
+        Some(0),
+        None,
+        None,
+        Nil,
+        None,
+        false,
+        Some("close"),
+        wrapper
+      )
     }
   }
 
   /** Create a servlet chunked response. */
   private def createChunkedResponse(
-      chunks: Source[HttpChunk, _],
-      response: HttpServletResponse,
-      asyncSupport: Boolean,
-  )(implicit mat: Materializer) = {
-
-    response.addHeader(TRANSFER_ENCODING, "chunked")
-
-    val stream = chunks
+      chunks: Source[HttpChunk, _]
+  )(implicit mat: Materializer): Source[ByteString, Any] = {
+    chunks
       .map {
         case HttpChunk.Chunk(bytes) =>
           ByteString
@@ -340,22 +307,6 @@ class ServletModelConversion(
                 .reduceLeft((b1, b2) => b1 ++ b2)
           }
       }
-
-    createStreamedResponse(stream, response, asyncSupport)
   }
 
-  // cache the date header of the last response so we only need to compute it every second
-  private var cachedDateHeader: (Long, String) = (Long.MinValue, null)
-  private def dateHeader: String = {
-    val currentTimeMillis  = System.currentTimeMillis()
-    val currentTimeSeconds = currentTimeMillis / 1000
-    cachedDateHeader match {
-      case (cachedSeconds, dateHeaderString) if cachedSeconds == currentTimeSeconds =>
-        dateHeaderString
-      case _ =>
-        val dateHeaderString = ResponseHeader.httpDateFormat.format(Instant.ofEpochMilli(currentTimeMillis))
-        cachedDateHeader = currentTimeSeconds -> dateHeaderString
-        dateHeaderString
-    }
-  }
 }

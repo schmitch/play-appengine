@@ -9,7 +9,8 @@ import scala.collection.JavaConverters._
 case class ScalaRunAppConfiguration(
     services: Seq[File],
     defaultBucketName: String = "appengine",
-    port: Int = 9090
+    port: Int = 9090,
+    maxInstances: Int = 1
 ) extends RunConfiguration {
   // Must Have Settings
   override lazy val getServices: java.util.List[File] = {
@@ -27,11 +28,12 @@ case class ScalaRunAppConfiguration(
   override lazy val getEnvironment: java.util.Map[String, String] = Map("PLAYFRAMEWORK_MODE" -> "Dev").asJava
   override lazy val getDefaultGcsBucketName: String = defaultBucketName
 
+  override lazy val getMaxModuleInstances: Integer = maxInstances
+
   // nullable settings
   override def getRuntime: String = null
   override def getAdminHost: String = null
   override def getAdminPort: Integer = null
-  override def getMaxModuleInstances: Integer = null
   override def getDevAppserverLogLevel: String = null
   override def getSkipSdkUpdateCheck: java.lang.Boolean = null
   override def getUseMtimeFileWatcher: java.lang.Boolean = null

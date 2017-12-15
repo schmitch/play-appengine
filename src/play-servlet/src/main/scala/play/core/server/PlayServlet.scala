@@ -11,15 +11,13 @@ import play.api._
 import play.core.ApplicationProvider
 import play.core.server.servlet.PlayRequestHandler
 
-import scala.util.control.NonFatal
+import scala.collection.JavaConverters._
 import scala.util.{ Success, Try }
 
 // We only need to register the WebListener, since the Servlet will register itself
 // @WebServlet(name = "play", urlPatterns = Array("/*"), asyncSupported = true)
 @WebListener
 final class PlayServlet extends HttpServlet with ServletContextListener with Server {
-
-  private val logger = Logger(this.getClass)
 
   def mode: Mode = {
     Option(System.getenv("PLAYFRAMEWORK_MODE"))
@@ -30,13 +28,12 @@ final class PlayServlet extends HttpServlet with ServletContextListener with Ser
 
   @volatile
   private var application: Application = _
+  private var loggerConfigurator: Option[LoggerConfigurator] = None
 
   private def start(sce: ServletContextEvent) = {
     val rootDir = sce.getServletContext.getRealPath("/")
-
     val application: Application = {
-
-      val environment = Environment(new File(rootDir), this.getClass.getClassLoader, mode)
+      val environment = Environment(new File(rootDir), sce.getServletContext.getClassLoader, mode)
       val context     = ApplicationLoader.createContext(environment)
       val loader      = ApplicationLoader(context)
       loader.load(context)
@@ -49,18 +46,22 @@ final class PlayServlet extends HttpServlet with ServletContextListener with Ser
     application = start(sce)
     Play.start(application)
 
+    val logger = Logger(this.getClass)
+
     val registration = sce.getServletContext.addServlet("play", this)
     try {
       registration.setAsyncSupported(true)
     } catch {
       case _ @(_: IllegalStateException | _: NullPointerException) => logger.error("async is not supported")
     }
-    registration.addMapping("/*")
+    val registered = registration.addMapping("/*")
+    logger.trace(s"Already Registered: ${registered.asScala}")
   }
 
   override def contextDestroyed(sce: ServletContextEvent): Unit = {
     if (application != null) {
       Play.stop(application)
+      loggerConfigurator.foreach(_.shutdown())
     }
   }
 
@@ -80,7 +81,7 @@ final class PlayServlet extends HttpServlet with ServletContextListener with Ser
   }
 
   /** request handling */
-  private val requestHandler: PlayRequestHandler = new PlayRequestHandler(this)
+  private lazy val requestHandler: PlayRequestHandler = new PlayRequestHandler(this)
 
   override protected def service(request: HttpServletRequest, resp: HttpServletResponse): Unit = {
     requestHandler.handle(request, resp)
