@@ -1,6 +1,7 @@
 package de.envisia.google.sbt.appengine
 
 import com.typesafe.sbt.jse.SbtJsTask
+import de.envisia.google.sbt.appengine.WebappPlugin.autoImport.webappPostProcess
 import sbt.Keys._
 import sbt._
 import de.envisia.google.sbt.appengine.xml.XmlHelper
@@ -19,8 +20,8 @@ object AppenginePlayPlugin extends AutoPlugin {
     val PlayVersion = settingKey[String]("play version")
 
     object PlayAppEngineKeys {
-      val assetsPrefix = SettingKey[String]("assetsPrefix")
-      val playPrefixAndAssets = TaskKey[(String, File)]("playPrefixAndAssets", "Gets all the assets with their associated prefixes")
+      val playPrefixAndAssets =
+        TaskKey[(String, File)]("playPrefixAndAssets", "Gets all the assets with their associated prefixes")
       val playPackageAssets = TaskKey[File]("playPackageAssets")
     }
 
@@ -32,13 +33,9 @@ object AppenginePlayPlugin extends AutoPlugin {
   import com.typesafe.sbt.web.SbtWeb.autoImport._
   import WebKeys._
 
-  val playPrefixAndAssetsSetting = playPrefixAndAssets := {
-    assetsPrefix.value -> (WebKeys.public in Assets).value
-  }
-
   private def updateWebXmlTask: Def.Initialize[Task[Seq[(File, String)]]] = Def.task {
     val baseXml = <web-app xmlns="http://java.sun.com/xml/ns/j2ee" version="3.1"></web-app>
-    val webXml = (target in webappPrepare).value / "WEB-INF" / "web.xml"
+    val webXml  = (target in webappPrepare).value / "WEB-INF" / "web.xml"
     val xml = {
       if (webXml.exists()) {
         XML.loadFile(webXml)
@@ -56,13 +53,20 @@ object AppenginePlayPlugin extends AutoPlugin {
     Nil
   }
 
-  private def copyAssetsTask: Def.Initialize[Task[Seq[(File, String)]]] = Def.task {
+  private def copyAssetsTask: Def.Initialize[Task[File => Unit]] = Def.taskDyn {
+    val webappTarget = (target in webappPrepare).value
+    val webInfDir    = webappTarget / "WEB-INF"
+    val webappLibDir = webInfDir / "lib"
+    val value        = (packageBin in Assets).value
+    val taskStream   = streams.value
 
-    val value = (packageBin in Assets).value
+    Def.task { file =>
+      println(file)
 
-    println(s"Assets Package: $value")
-
-    Nil
+      Compat.cacheify(taskStream.cacheDirectory / "xsbt-web-plugin", "lib-web-assets", { in =>
+        Some(webappLibDir / in.getName)
+      }, Set(value))
+    }
   }
 
   lazy val serviceSettings = Seq[Setting[_]](
@@ -88,7 +92,7 @@ object AppenginePlayPlugin extends AutoPlugin {
       val dirs = (unmanagedResourceDirectories in Compile).value
       (dirs * "routes").get ++ (dirs * "*.routes").get
     },
-    webappPrepare := updateWebXmlTask.dependsOn(webappPrepare).value
+    webappPrepare := updateWebXmlTask.dependsOn(webappPrepare).value,
   )
 
   lazy val defaultScalaSettings = Seq[Setting[_]](
@@ -102,7 +106,6 @@ object AppenginePlayPlugin extends AutoPlugin {
     jsFilter in Assets := new PatternFilter("""[^_].*\.js""".r.pattern),
     WebKeys.stagingDirectory := WebKeys.stagingDirectory.value / "public",
     WebKeys.exportedMappings in Assets := Nil,
-
     // playAssetsWithCompilation := {
     //   val ignore = ((assets in Assets) ?).value
     //   getPlayAssetsWithCompilation((compile in Compile).value)
@@ -110,15 +113,13 @@ object AppenginePlayPlugin extends AutoPlugin {
     // Assets for run mode
     // PlayRun.playPrefixAndAssetsSetting,
     // PlayRun.playAllAssetsSetting,
-    assetsPrefix := "public/",
     // Assets for distribution
-    WebKeys.packagePrefix in Assets := assetsPrefix.value,
+    WebKeys.packagePrefix in Assets := "public/",
     playPackageAssets := (packageBin in Assets).value,
-
-    webappPrepare := webappPrepare.dependsOn(copyAssetsTask).value,
-
+    // WebApp
+    webappPostProcess := copyAssetsTask.value,
     // Assets for testing
-    public in TestAssets := (public in TestAssets).value / assetsPrefix.value,
+    public in TestAssets := (public in TestAssets).value / (WebKeys.packagePrefix in Assets).value,
     fullClasspath in Test += Attributed.blank((assets in TestAssets).value.getParentFile)
   )
 

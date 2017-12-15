@@ -67,31 +67,16 @@ object WebappPlugin extends AutoPlugin {
   }
 
   private def webappPrepareTask = Def.task {
-    def cacheify(name: String, dest: File => Option[File], in: Set[File]): Set[File] =
-      Compat
-        .cached(streams.value.cacheDirectory / "xsbt-web-plugin" / name, lastModified, exists)({
-          (inChanges, outChanges) =>
-            // toss out removed files
-            for {
-              removed  <- inChanges.removed
-              toRemove <- dest(removed)
-            } yield IO.delete(toRemove)
-
-            // apply and report changes
-            for {
-              in  <- inChanges.added ++ inChanges.modified -- inChanges.removed
-              out <- dest(in)
-              _ = IO.copyFile(in, out)
-            } yield out
-        })
-        .apply(in)
-
     val webappSrcDir = (sourceDirectory in webappPrepare).value
     val webappTarget = (target in webappPrepare).value
 
     val classpath    = (fullClasspath in Runtime).value
     val webInfDir    = webappTarget / "WEB-INF"
     val webappLibDir = webInfDir / "lib"
+
+    def cacheify(name: String, dest: File => Option[File], in: Set[File]): Set[File] = {
+      Compat.cacheify(streams.value.cacheDirectory / "xsbt-web-plugin", name, dest, in)
+    }
 
     cacheify(
       "webapp", { in =>
