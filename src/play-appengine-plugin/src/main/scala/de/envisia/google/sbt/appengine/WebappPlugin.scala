@@ -61,7 +61,7 @@ object WebappPlugin extends AutoPlugin {
   }
 
   private def webappAppengineWebXmlReadTask = Def.task {
-    val appengineWebXml = (target in webappPrepare).value / "WEB-INF" / "appengine-web.xml"
+    val appengineWebXml = (sourceDirectory in webappPrepare).value / "WEB-INF" / "appengine-web.xml"
     if (appengineWebXml.exists()) Some((XML.loadFile(appengineWebXml), thisProjectRef.value))
     else None
   }
